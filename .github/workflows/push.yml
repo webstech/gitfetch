@@ -1,0 +1,116 @@
+# toy time tests
+name: Build & run tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: Node v${{ matrix.node-version }} on ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [16.x]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GIT_BASE: 2dc94da3744bfbbf145eca587a0f5ff480cc5867
+      GIT_REF: 89bece5
+
+    steps:
+    # Check out repo under sub-dir so other repo can be checked out
+    - uses: actions/checkout@v2
+      with:
+        path: gitfetch
+
+    # Check out github-glue.test.ts repo if configured for it
+    - uses: actions/checkout@v2
+      with:
+        repository: gitgitgadget/git
+        path: git
+        ref: ${{ env.GIT_BASE }}
+      if: env.GIT_BASE || env.GGG_REPOSITORY
+
+    - name: Update git repo
+      run: echo git fetch
+      working-directory: git
+
+    - uses: actions/setup-node@v1
+      with:
+        node-version: '${{ matrix.node-version }}'
+
+    - uses: octokit/graphql-action@v2.x
+      id: get_commit_date
+      with:
+        query: |
+          query release($owner:String!,$repo:String!,$commit:GitObjectID!) {
+            repository(owner:$owner,name:$repo) {
+              object(oid:$commit) {
+                ... on Commit {
+                  committedDate,
+                }
+              }
+            }
+          }
+      env:
+        INPUT_owner: "webstech"
+        INPUT_repo: ${{ github.event.repository.name }}
+        INPUT_commit: "5732d21973c550251e0df7848df849ca75829d1c"
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - run: "echo 'latest commit: ${{ steps.get_commit_date.outputs.data }}'"
+
+    - name: Clone start date
+      uses: actions/github-script@v3
+      id: set_date
+      with:
+        result-encoding: string
+        script: |
+            const dateFrom = ${{ steps.get_commit_date.outputs.data }};
+            return dateFrom.repository.object.committedDate;
+    - run: "echo 'latest commit: ${{ steps.set_date.outputs.result }}'"
+    - run: "/usr/bin/git fetch --no-tags --prune --progress --no-recurse-submodules --shallow-since=${{ steps.set_date.outputs.result }} origin"
+      working-directory: gitfetch
+
+    - name: Git commit date2
+      uses: octokit/graphql-action@v2.x
+      id: git_commit_date2
+      with:
+        query: |
+          query release($owner:String!,$repo:String!,$commit:GitObjectID!) {
+            repository(owner:$owner,name:$repo) {
+              object(oid:$commit) {
+                ... on Commit {
+                  committedDate,
+                }
+              }
+            }
+          }
+      env:
+        INPUT_owner: "gitgitgadget"
+        INPUT_repo: "git"
+        INPUT_commit: ${{ env.GIT_BASE }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - run: "echo 'latest commit: ${{ steps.get_commit_date2.outputs.data }}'"
+
+    - name: Clone start date
+      uses: actions/github-script@v3
+      id: set_date2
+      with:
+        result-encoding: string
+        script: |
+            const dateFrom = ${{ steps.git_commit_date2.outputs.data }};
+            return dateFrom.repository.object.committedDate;
+    - run: "echo 'latest commit: ${{ steps.set_date2.outputs.result }}'"
+    - run: |
+        git log -4
+        git fetch --no-tags --prune --progress \
+          --no-recurse-submodules \
+          --shallow-since=${{ steps.set_date2.outputs.result }} \
+          origin +${{ env.GIT_BASE }}:refs/remotes/origin/main
+        git log -4
+      working-directory: git
+
+    - name: Install packages
+      run: npm ci
+      working-directory: gitfetch
